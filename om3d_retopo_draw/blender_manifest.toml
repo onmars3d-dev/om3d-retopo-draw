@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+
+id = "om3d_retopo_draw"
+version = "0.8.4"
+name = "OM3D Retopo Draw"
+tagline = "Draw retopology directly on a reference mesh"
+maintainer = "Aunmar <info@onmars3d.com>"
+type = "add-on"
+tags = ["Modeling", "Mesh"]
+
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
