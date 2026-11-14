@@ -139,7 +139,7 @@ class TopoEditMixin:
 
     def _surface_guard_init(self):
         dims = self.ref.dimensions
-        scale = max(max(self.ref.scale), 1e-9)
+        scale = max(max(abs(c) for c in self.ref.scale), 1e-9)
         self._surf_eps = max(max(dims) / scale * 1e-4, 1e-6)
         draw.EXTERNAL[0] = False
         # verts already off the surface when the mode starts are left alone

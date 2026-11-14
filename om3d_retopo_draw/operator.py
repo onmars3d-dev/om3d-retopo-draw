@@ -50,6 +50,38 @@ def _tag_all(context):
                 area.tag_redraw()
 
 
+# The running session's draw handlers. They are kept here, on the module, and not only on
+# the operator: Blender can drop the operator without warning (file load, add-on disabled),
+# and then only the module is left to clean up.
+_SESSION = {"h_view": None, "h_px": None}
+
+
+def _remove_draw_handlers():
+    for key in ("h_view", "h_px"):
+        h = _SESSION[key]
+        if h is not None:
+            try:
+                bpy.types.SpaceView3D.draw_handler_remove(h, "WINDOW")
+            except (ValueError, RuntimeError):
+                pass
+            _SESSION[key] = None
+
+
+def shutdown_session():
+    """End a running session from outside the operator (add-on disabled, file loaded)."""
+    _remove_draw_handlers()
+    if _mark_dirty in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_mark_dirty)
+    try:
+        wm = bpy.context.window_manager
+        if getattr(wm, "om3d_topo_running", False):
+            wm.om3d_topo_running = False
+            for win in wm.windows:
+                win.workspace.status_text_set(None)
+    except (AttributeError, RuntimeError):
+        pass
+
+
 class OM3D_OT_retopo_draw(TopoSymmetryMixin, TopoQuadMixin, TopoEditMixin, TopoToolsMixin, bpy.types.Operator):
     """Toggle Retopo Draw mode: draw retopology on the reference mesh"""
     bl_idname = "om3d.retopo_draw"
@@ -74,6 +106,9 @@ class OM3D_OT_retopo_draw(TopoSymmetryMixin, TopoQuadMixin, TopoEditMixin, TopoT
         ref = settings.reference
         if ref is None or ref.type != "MESH":
             self.report({"WARNING"}, "Pick a reference mesh in the OM3D sidebar tab first")
+            return {"CANCELLED"}
+        if ref.name not in context.view_layer.objects:
+            self.report({"WARNING"}, f"The reference '{ref.name}' isn't in this scene any more. Pick it again")
             return {"CANCELLED"}
 
         self.area = context.area
@@ -130,25 +165,42 @@ class OM3D_OT_retopo_draw(TopoSymmetryMixin, TopoQuadMixin, TopoEditMixin, TopoT
         # and gives it back once neither Retopo Draw nor plain Edit Mode needs it
         ov_mod.claim_retopology(self.area.spaces.active)
 
-        self._h_view = bpy.types.SpaceView3D.draw_handler_add(
-            draw.draw_view, (self,), "WINDOW", "POST_VIEW")
-        self._h_px = bpy.types.SpaceView3D.draw_handler_add(
-            draw.draw_px, (self,), "WINDOW", "POST_PIXEL")
-        if _mark_dirty not in bpy.app.handlers.depsgraph_update_post:
-            bpy.app.handlers.depsgraph_update_post.append(_mark_dirty)
+        try:
+            _remove_draw_handlers()  # never two sets, even after an unclean exit
+            _SESSION["h_view"] = bpy.types.SpaceView3D.draw_handler_add(
+                draw.draw_view, (self,), "WINDOW", "POST_VIEW")
+            _SESSION["h_px"] = bpy.types.SpaceView3D.draw_handler_add(
+                draw.draw_px, (self,), "WINDOW", "POST_PIXEL")
+            if _mark_dirty not in bpy.app.handlers.depsgraph_update_post:
+                bpy.app.handlers.depsgraph_update_post.append(_mark_dirty)
 
-        wm.om3d_topo_running = True
-        context.workspace.status_text_set(status_text(settings))
+            wm.om3d_topo_running = True
+            context.workspace.status_text_set(status_text(settings))
+            self._refresh(event)
+            _tag_all(context)
+        except Exception:
+            # anything going wrong here must not leave handlers or the running flag behind
+            import traceback
+            traceback.print_exc()
+            self._finish(context)
+            self.report({"ERROR"}, "Retopo Draw couldn't start. See the system console.")
+            return {"CANCELLED"}
         wm.modal_handler_add(self)
-        self._refresh(event)
-        _tag_all(context)
         return {"RUNNING_MODAL"}
+
+    def cancel(self, context):
+        # Blender calls this when it ends the operator itself (file load, window closed, quit)
+        self._finish(context)
 
     def _get_or_create_retopo(self, context, ref):
         obj = context.active_object
-        if obj is not None and obj.mode != "OBJECT" and (obj == ref or obj.type != "MESH"):
+        # never draw into the reference: not the object, not a linked duplicate sharing its
+        # mesh, and not library data (edits there are lost on reload)
+        unusable = (obj is None or obj == ref or obj.type != "MESH" or obj.data == ref.data
+                    or obj.library is not None or obj.data.library is not None)
+        if obj is not None and obj.mode != "OBJECT" and unusable:
             bpy.ops.object.mode_set(mode="OBJECT")
-        if obj is None or obj == ref or obj.type != "MESH":
+        if unusable:
             me = bpy.data.meshes.new(ref.name + "_retopo")
             obj = bpy.data.objects.new(me.name, me)
             coll = context.collection or context.scene.collection
@@ -736,11 +788,18 @@ class OM3D_OT_retopo_draw(TopoSymmetryMixin, TopoQuadMixin, TopoEditMixin, TopoT
                 self._extend_end()
                 self._refresh(event)
                 return {"RUNNING_MODAL"}
-        if event.type in NAV_EVENTS or event.type.startswith("NUMPAD_"):
+        if event.type in NAV_EVENTS or (event.type.startswith("NUMPAD_")
+                                        and event.type != "NUMPAD_ENTER"):
             return {"PASS_THROUGH"}
         idle = self.state == "IDLE"
         if idle and not self._in_viewport(event):
             self.show_brush = False
+            # a key let go outside the viewport must not stay "held"
+            if event.value == "RELEASE":
+                if event.type == "TAB":
+                    self.tab_held = False
+                elif event.type == "D":
+                    self.d_held = False
             return {"PASS_THROUGH"}
 
         self.mouse = self._event_mouse(event)
@@ -760,10 +819,12 @@ class OM3D_OT_retopo_draw(TopoSymmetryMixin, TopoQuadMixin, TopoEditMixin, TopoT
             return {"PASS_THROUGH"}
 
         if event.type == "D" and idle:
-            if event.value == "PRESS":
-                self.d_held = True
-            elif event.value == "RELEASE":
+            if event.value == "RELEASE":
                 self.d_held = False
+            elif event.ctrl or event.shift or event.alt:
+                return {"PASS_THROUGH"}  # Shift+D, Alt+D... are Blender's own shortcuts
+            elif event.value == "PRESS":
+                self.d_held = True
             self._refresh(event)
             return {"RUNNING_MODAL"}
 
@@ -880,14 +941,7 @@ class OM3D_OT_retopo_draw(TopoSymmetryMixin, TopoQuadMixin, TopoEditMixin, TopoT
         return {"PASS_THROUGH"}
 
     def _finish(self, context):
-        for attr in ("_h_view", "_h_px"):
-            h = getattr(self, attr, None)
-            if h is not None:
-                try:
-                    bpy.types.SpaceView3D.draw_handler_remove(h, "WINDOW")
-                except Exception:
-                    pass
-                setattr(self, attr, None)
+        _remove_draw_handlers()
         try:
             bpy.app.handlers.depsgraph_update_post.remove(_mark_dirty)
         except ValueError:

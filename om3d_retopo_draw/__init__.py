@@ -251,6 +251,15 @@ classes = (OM3D_RetopoSettings, OM3D_OT_retopo_draw, OM3D_OT_clear_dots,
            OM3D_PT_retopo_draw, OM3D_PT_retopo_options)
 
 
+@bpy.app.handlers.persistent
+def _on_load_post(_dummy=None, _other=None):
+    """A file was opened: end any session and forget everything about the old file."""
+    from . import operator
+    operator.shutdown_session()
+    conform.reset_state()
+    overlay.reset_state()
+
+
 def register():
     for c in classes:
         bpy.utils.register_class(c)
@@ -258,14 +267,21 @@ def register():
     bpy.types.WindowManager.om3d_topo_running = bpy.props.BoolProperty(default=False)
     conform.register()
     overlay.register()
+    if _on_load_post not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_on_load_post)
 
 
 def unregister():
+    from . import operator
+    if _on_load_post in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_on_load_post)
+    operator.shutdown_session()  # a session still running: draw handlers, status bar, flag
+    try:
+        mods.unlock_all()
+    except (AttributeError, RuntimeError):
+        pass  # no file data available (Blender is shutting down)
     conform.unregister()
     overlay.unregister()
-    from .operator import _mark_dirty
-    if _mark_dirty in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.remove(_mark_dirty)
     del bpy.types.WindowManager.om3d_topo_running
     del bpy.types.Scene.om3d_topo
     for c in reversed(classes):

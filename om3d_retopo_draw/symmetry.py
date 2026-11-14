@@ -69,7 +69,7 @@ class TopoSymmetryMixin:
             return p
         dp.normalize()
         bb = [Vector(c) for c in self.ref.bound_box]
-        reach = (bb[6] - bb[0]).length * max(self.ref.scale) * 2.0 + 1.0
+        reach = (bb[6] - bb[0]).length * max(abs(c) for c in self.ref.scale) * 2.0 + 1.0
         origin = self.ref_inv @ (p - dp * reach)
         dl = (self.ref_inv.to_3x3() @ dp).normalized()
         best, best_d = None, None

@@ -25,7 +25,7 @@ Made by Aunmar at [OnMars3D](https://onmars3d.com). Built with Claude.
 
 ## Controls in Retopo Draw mode
 
-The extend key can be Tab or Alt (set in the panel). It's shown as Tab below.
+The extend key can be Alt (the default) or Tab (set in the panel). It's shown as Tab below.
 
 **Off the mesh**
 

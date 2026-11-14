@@ -12,13 +12,17 @@ Only meshes Retopo Draw has worked on (tagged RETOPO_TAG) are touched, so editin
 any other mesh in the scene is left alone.
 """
 import bmesh
+import json
+
 import bpy
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
 RETOPO_TAG = "om3d_retopo"
 SNAP_KEYS = ("use_snap", "snap_elements", "use_snap_self", "use_snap_edit", "use_snap_nonedit",
-             "use_snap_translate", "use_snap_rotate", "use_snap_scale", "use_snap_project")
+             "use_snap_selectable", "use_snap_translate", "use_snap_rotate", "use_snap_scale",
+             "use_snap_project")
+SNAP_PROP = "om3d_snap_saved"  # scene: the user's own snapping settings while we override them
 
 _state = {
     "baseline": {},      # object name -> rounded coords of verts that were already off the surface
@@ -156,15 +160,44 @@ def _snap_wanted(context):
     return bool(s is not None and s.live_conform and is_retopo(obj, s))
 
 
+def _stored_snapping(scene):
+    """The user's snapping settings kept in the scene (they survive save, reopen and a
+    restart), or None. The tool settings we override are saved in the .blend, so the
+    originals have to be saved there too or a save mid-override would lose them."""
+    raw = scene.get(SNAP_PROP)
+    if not isinstance(raw, str):
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {k: (set(v) if isinstance(v, list) else v) for k, v in data.items() if k in SNAP_KEYS}
+
+
 def _apply_snapping(context, on):
-    ts = context.scene.tool_settings
+    scene = context.scene
+    ts = scene.tool_settings
+    if _state["snap_saved"] is None:
+        # a file saved (or loaded) while the override was on: pick the originals back up
+        _state["snap_saved"] = _stored_snapping(scene)
+    fresh = False
     if on and _state["snap_saved"] is None:
+        fresh = True
         saved = {}
         for k in SNAP_KEYS:
             if hasattr(ts, k):
                 v = getattr(ts, k)
                 saved[k] = set(v) if isinstance(v, set) else v
         _state["snap_saved"] = saved
+        try:
+            scene[SNAP_PROP] = json.dumps({k: (sorted(v) if isinstance(v, set) else v)
+                                           for k, v in saved.items()})
+        except (TypeError, AttributeError):
+            pass  # scene not writable right now; the in-memory copy still works
+    if on and fresh:
+        # set once, when the override starts: the user can still change snapping afterwards
         ts.use_snap = True
         ts.snap_elements = {"FACE_NEAREST"}
         ts.use_snap_self = False
@@ -173,13 +206,20 @@ def _apply_snapping(context, on):
         ts.use_snap_translate = True
         ts.use_snap_rotate = True
         ts.use_snap_scale = True
+        if hasattr(ts, "use_snap_selectable"):
+            ts.use_snap_selectable = False  # a locked (unselectable) reference must still snap
     elif not on and _state["snap_saved"] is not None:
         for k, v in _state["snap_saved"].items():
             try:
                 setattr(ts, k, v)
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 pass
         _state["snap_saved"] = None
+        try:
+            if SNAP_PROP in scene:
+                del scene[SNAP_PROP]
+        except (TypeError, AttributeError):
+            pass
 
 
 # ---------------------------------------------------------------- the deferred conform pass
@@ -236,6 +276,16 @@ def on_setting_changed(self, context):
     if self.live_conform and is_retopo(obj, self):
         _make_baseline(context, obj, self)
     _apply_snapping(context, _snap_wanted(context) and not _topo_running(context))
+
+
+def reset_state():
+    """A new file was loaded: nothing remembered about the old one applies any more."""
+    _state["baseline"] = {}
+    _state["edit_obj"] = None
+    _state["snap_saved"] = None   # the new file's own stored copy (if any) is picked up later
+    _state["busy"] = False
+    _state["bvh"] = None
+    _state["bvh_key"] = None
 
 
 def register():

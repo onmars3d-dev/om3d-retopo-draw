@@ -251,6 +251,12 @@ def _sync_retopology():
     return 0.25
 
 
+def reset_state():
+    """A new file was loaded: saved overlay values belonged to the old file's viewports."""
+    _saved.clear()
+    mark_dirty()
+
+
 def _restore_all():
     try:
         for area, sp in _view_spaces():

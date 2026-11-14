@@ -7,11 +7,16 @@ MIRROR = "OM3D Mirror"
 OFFSET = "OM3D Offset"
 
 
+RETOPO_TAG = "om3d_retopo"  # same tag conform.py sets on meshes Retopo Draw has worked on
+
+
 def retopo_object(context):
-    """The mesh Retopo Draw works on: the active mesh that isn't the reference."""
+    """The mesh Retopo Draw works on: the active mesh that isn't the reference and that
+    Retopo Draw has already worked on (tagged). An unrelated mesh that just happens to be
+    active never gets the Mirror or Offset modifiers."""
     s = context.scene.om3d_topo
     obj = context.view_layer.objects.active
-    if obj is None or obj.type != "MESH" or obj == s.reference:
+    if obj is None or obj.type != "MESH" or obj == s.reference or not obj.get(RETOPO_TAG):
         return None
     return obj
 
@@ -95,5 +100,17 @@ def sync_ref_lock(scene):
     else:
         if ref is not None and scene.get(LOCK_KEY) == ref.name:
             ref.hide_select = False
+        if LOCK_KEY in scene:
+            del scene[LOCK_KEY]
+
+
+def unlock_all():
+    """Add-on being disabled: give every locked reference its selectability back,
+    so the high poly isn't left unclickable with no button to fix it."""
+    for scene in bpy.data.scenes:
+        name = scene.get(LOCK_KEY, "")
+        obj = bpy.data.objects.get(name) if name else None
+        if obj is not None:
+            obj.hide_select = False
         if LOCK_KEY in scene:
             del scene[LOCK_KEY]
